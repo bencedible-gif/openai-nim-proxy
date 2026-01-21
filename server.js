@@ -119,49 +119,61 @@ app.post('/v1/chat/completions', async (req, res) => {
       let buffer = '';
       let reasoningStarted = false;
       
-response.data.on('data', (chunk) => {
-  buffer += chunk.toString();
-  const lines = buffer.split('\n');
-  buffer = lines.pop() || ''; // Keep the incomplete last line in the buffer
-
-  lines.forEach(line => {
-    const trimmedLine = line.trim();
-    
-    // 1. Skip empty lines
-    if (!trimmedLine) return;
-    
-    // 2. Only process lines starting with "data: "
-    if (trimmedLine.startsWith('data: ')) {
-      const jsonStr = trimmedLine.slice(6).trim();
-      
-      // 3. Handle the [DONE] signal
-      if (jsonStr === '[DONE]') {
-        res.write('data: [DONE]\n\n');
-        return;
-      }
-
-      try {
-        const data = JSON.parse(jsonStr);
+      response.data.on('data', (chunk) => {
+        buffer += chunk.toString();
+        const lines = buffer.split('\\n');
+        buffer = lines.pop() || '';
         
-        // 4. Use Optional Chaining (?.) to prevent "undefined" crashes
-        const delta = data?.choices?.[0]?.delta;
-        
-        if (delta) {
-          const reasoning = delta.reasoning_content;
-          const content = delta.content;
-          
-          // ... your SHOW_REASONING logic here ...
-          
-          res.write(`data: ${JSON.stringify(data)}\n\n`);
-        }
-      } catch (e) {
-        // This is likely a partial JSON chunk; ignore it and wait for the next buffer cycle
-        console.log("Partial chunk skipped...");
-      }
-    }
-  });
-});
-
+        lines.forEach(line => {
+          if (line.startsWith('data: ')) {
+            if (line.includes('[DONE]')) {
+              res.write(line + '\\n');
+              return;
+            }
+            
+            try {
+              const data = JSON.parse(line.slice(6));
+              if (data.choices?.[0]?.delta) {
+                const reasoning = data.choices[0].delta.reasoning_content;
+                const content = data.choices[0].delta.content;
+                
+                if (SHOW_REASONING) {
+                  let combinedContent = '';
+                  
+                  if (reasoning && !reasoningStarted) {
+                    combinedContent = '<think>\\n' + reasoning;
+                    reasoningStarted = true;
+                  } else if (reasoning) {
+                    combinedContent = reasoning;
+                  }
+                  
+                  if (content && reasoningStarted) {
+                    combinedContent += '</think>\\n\\n' + content;
+                    reasoningStarted = false;
+                  } else if (content) {
+                    combinedContent += content;
+                  }
+                  
+                  if (combinedContent) {
+                    data.choices[0].delta.content = combinedContent;
+                    delete data.choices[0].delta.reasoning_content;
+                  }
+                } else {
+                  if (content) {
+                    data.choices[0].delta.content = content;
+                  } else {
+                    data.choices[0].delta.content = '';
+                  }
+                  delete data.choices[0].delta.reasoning_content;
+                }
+              }
+              res.write(`data: ${JSON.stringify(data)}\\n\\n`);
+            } catch (e) {
+              res.write(line + '\\n');
+            }
+          }
+        });
+      });
       
       response.data.on('end', () => res.end());
       response.data.on('error', (err) => {
